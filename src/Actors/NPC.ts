@@ -1,6 +1,6 @@
 import { Actor, BaseAlign, Color, Engine, Font, Label, Meet, MoveTo, Rectangle, TextAlign } from "excalibur";
 import { npc, player } from "../main";
-import { BehaviorTreeComponent, createBehaviorTree } from "../Components/newBehaviorTree";
+import { BehaviorTreeComponent, createBehaviorTree } from "../Components/BehaviorTree";
 
 export class NPC extends Actor {
   speed: number = 100;

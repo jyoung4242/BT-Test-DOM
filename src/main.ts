@@ -2,9 +2,10 @@
 import "./style.css";
 
 import { UI } from "@peasy-lib/peasy-ui";
-import { Engine, DisplayMode, Actor } from "excalibur";
+import { Engine, DisplayMode, Actor, Color } from "excalibur";
 import { model, template } from "./UI/UI";
-import { BehaviorTreeComponent, BTConfig, RootNode } from "./Lib/BehaviorTree";
+import { NPC } from "./Actors/NPC";
+import { Player } from "./Actors/Player";
 
 await UI.create(document.body, model, template).attached;
 
@@ -17,12 +18,8 @@ const game = new Engine({
 });
 
 await game.start();
+export const player = new Player();
+export const npc = new NPC(player);
 
-class Player extends Actor {
-  bt: BehaviorTreeComponent;
-  constructor() {
-    super();
-    const btConfig: BTConfig = { owner: this, verbose: true };
-    this.addComponent((this.bt = new BehaviorTreeComponent(btConfig)));
-  }
-}
+game.add(npc);
+game.add(player);

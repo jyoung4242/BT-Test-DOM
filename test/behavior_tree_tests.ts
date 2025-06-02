@@ -11,13 +11,13 @@ import {
 } from "../src/Components/BehaviorTree"; // Adjust import path as needed
 
 // Mock Excalibur classes
-class MockAction extends Action {
+class MockAction implements Action {
+  id: number = Math.floor(Math.random() * 1000000); // Generate unique ID
   private _isComplete = false;
   private _duration: number;
   private _elapsed = 0;
 
   constructor(duration = 100) {
-    super();
     this._duration = duration;
   }
 
@@ -28,13 +28,17 @@ class MockAction extends Action {
     }
   }
 
-  isComplete(): boolean {
+  isComplete(actor: Actor): boolean {
     return this._isComplete;
   }
 
   reset(): void {
     this._isComplete = false;
     this._elapsed = 0;
+  }
+
+  stop(): void {
+    this._isComplete = true;
   }
 }
 
@@ -134,7 +138,7 @@ describe("BehaviorTreeComponent", () => {
     it("should return Success when action completes", () => {
       const component = new BehaviorTreeComponent({ owner: actor });
       const mockAction = new MockAction(0); // Completes immediately
-      mockAction.update(100); // Make it complete
+      vi.spyOn(mockAction, "isComplete").mockReturnValue(true);
       const actionNode = new ActionNode("test-action", actor, component, mockAction);
 
       const result = actionNode.update(engine, 16);

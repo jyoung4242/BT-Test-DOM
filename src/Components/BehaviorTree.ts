@@ -48,12 +48,12 @@ export class BehaviorTreeComponent extends Component {
   }
 
   onAdd(owner: Entity): void {
-    this.owner.on("preupdate", this.update.bind(this));
+    this.owner.on("postupdate", this.update.bind(this));
   }
 
   onRemove(previousOwner: Entity): void {
     this._root.destroy();
-    this.owner.off("preupdate", this.update.bind(this));
+    this.owner.off("postupdate", this.update.bind(this));
   }
 
   get root() {
@@ -69,23 +69,7 @@ export class BehaviorTreeComponent extends Component {
   }
 
   update(event: ActorEvents["preupdate"]) {
-    // Two-phase update: first process all state changes, then execute logic
-    this.processTreeStateChanges(this._root);
     this._root.update(event.engine, event.elapsed);
-  }
-
-  private processTreeStateChanges(node: BaseNode): void {
-    node.processStateChanges();
-
-    if ("children" in node && Array.isArray((node as any).children)) {
-      (node as any).children.forEach((child: BaseNode) => {
-        this.processTreeStateChanges(child);
-      });
-    }
-
-    if ("child" in node && (node as any).child) {
-      this.processTreeStateChanges((node as any).child);
-    }
   }
 
   private createRootNode(type: "Sequence" | "Selector"): SelectorNode | SequenceNode {
@@ -119,12 +103,9 @@ export abstract class BaseNode {
   parentComponent: BehaviorTreeComponent;
 
   isInterrupted: boolean = false;
+  isReset: boolean = false;
   interruptHandler?: () => void;
   resetHandler?: () => void;
-
-  // State change flags for deferred processing
-  private _needsInterrupt: boolean = false;
-  private _needsReset: boolean = false;
 
   constructor(name: string, owner: Actor, parentComponent: BehaviorTreeComponent) {
     this.owner = owner;
@@ -134,44 +115,12 @@ export abstract class BaseNode {
     this.parentComponent.interruptEmitter.on("reset", (this.resetHandler = this.onReset.bind(this)));
   }
 
-  onInterrupt(): BehaviorStatusType {
-    this._needsInterrupt = true;
-    return BehaviorStatus.Failure;
+  onInterrupt() {
+    this.isInterrupted = true;
   }
 
   onReset() {
-    this._needsReset = true;
-  }
-
-  // Process pending state changes - called before update logic
-  processStateChanges(): boolean {
-    let stateChanged = false;
-
-    if (this._needsInterrupt) {
-      this._needsInterrupt = false;
-      this.isInterrupted = true;
-      this.owner.actions.clearActions();
-      this.handleInterruptStateChange();
-      stateChanged = true;
-    }
-
-    if (this._needsReset) {
-      this._needsReset = false;
-      this.isInterrupted = false;
-      this.handleResetStateChange();
-      stateChanged = true;
-    }
-
-    return stateChanged;
-  }
-
-  // Override these for custom state change handling
-  protected handleInterruptStateChange(): void {
-    // Default implementation - can be overridden by subclasses
-  }
-
-  protected handleResetStateChange(): void {
-    // Default implementation - can be overridden by subclasses
+    this.isReset = true;
   }
 
   destroy() {
@@ -189,13 +138,6 @@ export abstract class BaseNode {
 abstract class CompositeNode extends BaseNode {
   currentIndex: number = 0;
   children: BaseNode[] = [];
-
-  protected handleInterruptStateChange(): void {}
-
-  protected handleResetStateChange(): void {
-    super.handleResetStateChange();
-    this.currentIndex = 0;
-  }
 
   destroy() {
     for (const child of this.children) {
@@ -223,18 +165,22 @@ abstract class CompositeNode extends BaseNode {
 
 // define sequence and selector
 class SequenceNode extends CompositeNode {
-  protected handleResetStateChange(): void {
-    this.isInterrupted = false;
-    this.currentIndex = 0;
-  }
-
   update(engine: Engine, elapsed: number): BehaviorStatusType {
-    this.processStateChanges();
+    //gaurd condition
+    if (this.children.length === 0) return BehaviorStatus.Failure;
 
-    // If we were interrupted or reset, return early with the new status
-    // If there are no children, return failure
-    if (this.isInterrupted || this.children.length === 0) {
+    // handle interrupt
+    if (this.isInterrupted) {
+      this.isInterrupted = false;
       return BehaviorStatus.Failure;
+    }
+
+    // handle reset
+    if (this.isReset) {
+      this.isReset = false;
+      this.isInterrupted = false;
+      this.currentIndex = 0;
+      return BehaviorStatus.Ready;
     }
 
     const result = this.children[this.currentIndex].update(engine, elapsed);
@@ -260,18 +206,22 @@ class SequenceNode extends CompositeNode {
 }
 
 class SelectorNode extends CompositeNode {
-  protected resetCurrentIndex(): void {
-    this.currentIndex = 0;
-  }
-
   update(engine: Engine, elapsed: number): BehaviorStatusType {
-    this.processStateChanges();
+    //gaurd condition
+    if (this.children.length === 0) return BehaviorStatus.Failure;
 
-    // If we were interrupted or reset, return early with the new status
-    // If there are no children, return failure
-    if (this.isInterrupted || this.children.length === 0) {
-      this.currentIndex = 0;
+    // handle interrupt
+    if (this.isInterrupted) {
+      this.isInterrupted = false;
       return BehaviorStatus.Failure;
+    }
+
+    // handle reset
+    if (this.isReset) {
+      this.isReset = false;
+      this.isInterrupted = false;
+      this.currentIndex = 0;
+      return BehaviorStatus.Ready;
     }
 
     const result = this.children[this.currentIndex].update(engine, elapsed);
@@ -326,11 +276,19 @@ export class ActionNode extends BaseNode {
   }
 
   update(engine: Engine, elapsed: number): BehaviorStatusType {
-    this.processStateChanges();
-
-    // If we were interrupted, return failure immediately
+    // handle interrupt
     if (this.isInterrupted) {
+      this.isInterrupted = false;
+      this.owner.actions.clearActions();
       return BehaviorStatus.Failure;
+    }
+
+    // handle reset
+    if (this.isReset) {
+      this.isReset = false;
+      this.owner.actions.clearActions();
+      this.isInterrupted = false;
+      return BehaviorStatus.Ready;
     }
 
     if (!this.hasStarted) {
@@ -394,9 +352,20 @@ abstract class DecoratorNode extends BaseNode {
 
 export class InverterNode extends DecoratorNode {
   update(engine: Engine, elapsed: number): BehaviorStatusType {
-    this.processStateChanges();
+    if (!this.child) return BehaviorStatus.Failure;
 
-    if (this.isInterrupted || !this.child) return BehaviorStatus.Failure;
+    // handle interrupt
+    if (this.isInterrupted) {
+      this.isInterrupted = false;
+      return BehaviorStatus.Failure;
+    }
+
+    // handle reset
+    if (this.isReset) {
+      this.isReset = false;
+      this.isInterrupted = false;
+      return BehaviorStatus.Ready;
+    }
 
     const result = this.child.update(engine, elapsed);
 
@@ -420,20 +389,21 @@ export class RepeaterNode extends DecoratorNode {
     this.times = times;
   }
 
-  protected handleInterruptStateChange(): void {
-    super.handleInterruptStateChange();
-    this.currentCount = 0;
-  }
-
-  protected handleResetStateChange(): void {
-    super.handleResetStateChange();
-    this.currentCount = 0;
-  }
-
   update(engine: Engine, elapsed: number): BehaviorStatusType {
-    this.processStateChanges();
     if (!this.child) return BehaviorStatus.Failure;
-    if (this.isInterrupted) return BehaviorStatus.Failure;
+
+    // handle interrupt
+    if (this.isInterrupted) {
+      this.isInterrupted = false;
+      return BehaviorStatus.Failure;
+    }
+
+    // handle reset
+    if (this.isReset) {
+      this.isReset = false;
+      this.isInterrupted = false;
+      return BehaviorStatus.Ready;
+    }
 
     const result = this.child.update(engine, elapsed);
 

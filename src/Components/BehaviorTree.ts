@@ -27,7 +27,7 @@ type BehaviorTreeEvents = {
 };
 
 // Builder types
-export type NodeBuilder = SequenceBuilder | SelectorBuilder | ActionBuilder | ConditionBuilder | DecoratorBuilder;
+export type NodeBuilder = SequenceBuilder | SelectorBuilder | DecoratorBuilder;
 export type ConditionFunction = () => boolean;
 export type ActionFunction = () => BTActions;
 
@@ -117,8 +117,6 @@ export abstract class BaseNode {
   owner: Actor;
   name: string;
   parentComponent: BehaviorTreeComponent;
-  status: BehaviorStatusType = BehaviorStatus.Ready;
-  oldStatus: BehaviorStatusType = BehaviorStatus.Ready;
 
   isInterrupted: boolean = false;
   interruptHandler?: () => void;
@@ -142,6 +140,8 @@ export abstract class BaseNode {
   }
 
   onReset() {
+    console.log(`Resetting ${this.name}`);
+
     this._needsReset = true;
   }
 
@@ -152,7 +152,6 @@ export abstract class BaseNode {
     if (this._needsInterrupt) {
       this._needsInterrupt = false;
       this.isInterrupted = true;
-      this.status = BehaviorStatus.Failure;
       this.owner.actions.clearActions();
       this.handleInterruptStateChange();
       stateChanged = true;
@@ -161,7 +160,6 @@ export abstract class BaseNode {
     if (this._needsReset) {
       this._needsReset = false;
       this.isInterrupted = false;
-      this.status = BehaviorStatus.Ready;
       this.handleResetStateChange();
       stateChanged = true;
     }
@@ -191,22 +189,15 @@ export abstract class BaseNode {
 }
 
 abstract class CompositeNode extends BaseNode {
+  currentIndex: number = 0;
   children: BaseNode[] = [];
 
-  protected handleInterruptStateChange(): void {
-    super.handleInterruptStateChange();
-    // Reset index and notify children of interrupt
-    this.resetCurrentIndex();
-  }
+  protected handleInterruptStateChange(): void {}
 
   protected handleResetStateChange(): void {
     super.handleResetStateChange();
-    // Reset index when this node is reset
-    this.resetCurrentIndex();
+    this.currentIndex = 0;
   }
-
-  // Abstract method for resetting the current index - implemented by subclasses
-  protected abstract resetCurrentIndex(): void;
 
   destroy() {
     for (const child of this.children) {
@@ -234,21 +225,20 @@ abstract class CompositeNode extends BaseNode {
 
 // define sequence and selector
 class SequenceNode extends CompositeNode {
-  currentIndex: number = 0;
-
-  protected resetCurrentIndex(): void {
+  protected handleResetStateChange(): void {
+    this.isInterrupted = false;
     this.currentIndex = 0;
   }
 
   update(engine: Engine, elapsed: number): BehaviorStatusType {
     this.processStateChanges();
+
     // If we were interrupted or reset, return early with the new status
-    if (this.isInterrupted) {
-      this.currentIndex = 0;
+    // If there are no children, return failure
+    if (this.isInterrupted || this.children.length === 0) {
       return BehaviorStatus.Failure;
     }
 
-    if (this.children.length === 0) return BehaviorStatus.Failure;
     const result = this.children[this.currentIndex].update(engine, elapsed);
 
     if (result === BehaviorStatus.Success) {
@@ -262,10 +252,8 @@ class SequenceNode extends CompositeNode {
       this.currentIndex = 0;
       // Reset children
       for (const child of this.children) {
-        child.status = BehaviorStatus.Ready;
         child.onReset();
       }
-
       return BehaviorStatus.Success;
     } else {
       return BehaviorStatus.Running;
@@ -274,21 +262,19 @@ class SequenceNode extends CompositeNode {
 }
 
 class SelectorNode extends CompositeNode {
-  currentIndex: number = 0;
-
   protected resetCurrentIndex(): void {
     this.currentIndex = 0;
   }
 
   update(engine: Engine, elapsed: number): BehaviorStatusType {
     this.processStateChanges();
+
     // If we were interrupted or reset, return early with the new status
-    if (this.isInterrupted) {
+    // If there are no children, return failure
+    if (this.isInterrupted || this.children.length === 0) {
       this.currentIndex = 0;
       return BehaviorStatus.Failure;
     }
-
-    if (this.children.length === 0) return BehaviorStatus.Failure;
 
     const result = this.children[this.currentIndex].update(engine, elapsed);
 
@@ -298,7 +284,6 @@ class SelectorNode extends CompositeNode {
       this.currentIndex = 0;
       // Reset children
       for (const child of this.children) {
-        child.status = BehaviorStatus.Ready;
         child.onReset();
       }
       return BehaviorStatus.Success;
@@ -308,7 +293,6 @@ class SelectorNode extends CompositeNode {
       this.currentIndex = 0;
       // Reset children
       for (const child of this.children) {
-        child.status = BehaviorStatus.Ready;
         child.onReset();
       }
       return BehaviorStatus.Failure;
@@ -321,7 +305,6 @@ class SelectorNode extends CompositeNode {
 // define leaf nodes, actions and conditions
 export class ActionNode extends BaseNode {
   private hasStarted = false;
-
   action: BTActions;
 
   constructor(name: string, owner: Actor, parentComponent: BehaviorTreeComponent, action: BTActions) {
@@ -330,16 +313,13 @@ export class ActionNode extends BaseNode {
   }
 
   protected handleInterruptStateChange(): void {
-    super.handleInterruptStateChange();
     // Clean up action state when interrupted
     if (this.hasStarted) {
       this.owner.actions.clearActions();
     }
-    this.hasStarted = false;
   }
 
   protected handleResetStateChange(): void {
-    super.handleResetStateChange();
     // Clean up action state when reset
     if (this.hasStarted) {
       this.owner.actions.clearActions();
@@ -348,9 +328,9 @@ export class ActionNode extends BaseNode {
   }
 
   update(engine: Engine, elapsed: number): BehaviorStatusType {
-    // If we were interrupted, return failure immediately
     this.processStateChanges();
 
+    // If we were interrupted, return failure immediately
     if (this.isInterrupted) {
       return BehaviorStatus.Failure;
     }
@@ -362,7 +342,7 @@ export class ActionNode extends BaseNode {
     }
 
     // Check if action is finished
-    if (this.action.isComplete(this.owner)) {
+    if (this.hasStarted && this.action.isComplete(this.owner)) {
       this.hasStarted = false; // reset action
       return BehaviorStatus.Success;
     }
@@ -418,8 +398,7 @@ export class InverterNode extends DecoratorNode {
   update(engine: Engine, elapsed: number): BehaviorStatusType {
     this.processStateChanges();
 
-    if (!this.child) return BehaviorStatus.Failure;
-    if (this.isInterrupted) return BehaviorStatus.Failure;
+    if (this.isInterrupted || !this.child) return BehaviorStatus.Failure;
 
     const result = this.child.update(engine, elapsed);
 
@@ -662,14 +641,6 @@ export class SelectorBuilder extends BaseBuilder<SelectorNode> {
     builderFn(this);
     return this;
   }
-}
-
-export class ActionBuilder extends BaseBuilder<ActionNode> {
-  // Actions are leaf nodes, so they return to parent context
-}
-
-export class ConditionBuilder extends BaseBuilder<ConditionNode> {
-  // Conditions are leaf nodes
 }
 
 export class DecoratorBuilder extends BaseBuilder<DecoratorNode> {

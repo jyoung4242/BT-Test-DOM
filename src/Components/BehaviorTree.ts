@@ -140,8 +140,6 @@ export abstract class BaseNode {
   }
 
   onReset() {
-    console.log(`Resetting ${this.name}`);
-
     this._needsReset = true;
   }
 

@@ -1,3 +1,5 @@
+//BehaviorTree.ts
+
 import { Action, Actor, ActorEvents, Component, Engine, Entity, ParallelActions, EventEmitter } from "excalibur";
 
 //#region Types and Interfaces
@@ -239,13 +241,14 @@ class SequenceNode extends CompositeNode {
   }
 
   update(engine: Engine, elapsed: number): BehaviorStatusType {
+    this.processStateChanges();
     // If we were interrupted or reset, return early with the new status
     if (this.isInterrupted) {
+      this.currentIndex = 0;
       return BehaviorStatus.Failure;
     }
 
     if (this.children.length === 0) return BehaviorStatus.Failure;
-
     const result = this.children[this.currentIndex].update(engine, elapsed);
 
     if (result === BehaviorStatus.Success) {
@@ -262,6 +265,7 @@ class SequenceNode extends CompositeNode {
         child.status = BehaviorStatus.Ready;
         child.onReset();
       }
+
       return BehaviorStatus.Success;
     } else {
       return BehaviorStatus.Running;
@@ -277,8 +281,10 @@ class SelectorNode extends CompositeNode {
   }
 
   update(engine: Engine, elapsed: number): BehaviorStatusType {
+    this.processStateChanges();
     // If we were interrupted or reset, return early with the new status
     if (this.isInterrupted) {
+      this.currentIndex = 0;
       return BehaviorStatus.Failure;
     }
 
@@ -315,7 +321,7 @@ class SelectorNode extends CompositeNode {
 // define leaf nodes, actions and conditions
 export class ActionNode extends BaseNode {
   private hasStarted = false;
-  private isComplete = false;
+
   action: BTActions;
 
   constructor(name: string, owner: Actor, parentComponent: BehaviorTreeComponent, action: BTActions) {
@@ -326,25 +332,25 @@ export class ActionNode extends BaseNode {
   protected handleInterruptStateChange(): void {
     super.handleInterruptStateChange();
     // Clean up action state when interrupted
-    if (this.hasStarted && !this.isComplete) {
+    if (this.hasStarted) {
       this.owner.actions.clearActions();
     }
     this.hasStarted = false;
-    this.isComplete = false;
   }
 
   protected handleResetStateChange(): void {
     super.handleResetStateChange();
     // Clean up action state when reset
-    if (this.hasStarted && !this.isComplete) {
+    if (this.hasStarted) {
       this.owner.actions.clearActions();
     }
     this.hasStarted = false;
-    this.isComplete = false;
   }
 
-  update(): BehaviorStatusType {
+  update(engine: Engine, elapsed: number): BehaviorStatusType {
     // If we were interrupted, return failure immediately
+    this.processStateChanges();
+
     if (this.isInterrupted) {
       return BehaviorStatus.Failure;
     }
@@ -357,7 +363,7 @@ export class ActionNode extends BaseNode {
 
     // Check if action is finished
     if (this.action.isComplete(this.owner)) {
-      this.isComplete = true;
+      this.hasStarted = false; // reset action
       return BehaviorStatus.Success;
     }
 
@@ -368,7 +374,7 @@ export class ActionNode extends BaseNode {
 export abstract class ConditionNode extends BaseNode {
   abstract evaluate(): boolean;
 
-  update(): BehaviorStatusType {
+  update(engine: Engine, elapsed: number): BehaviorStatusType {
     // Conditions should always evaluate fresh, even if interrupted
     // (unless you want different behavior)
     return this.evaluate() ? BehaviorStatus.Success : BehaviorStatus.Failure;
@@ -410,6 +416,8 @@ abstract class DecoratorNode extends BaseNode {
 
 export class InverterNode extends DecoratorNode {
   update(engine: Engine, elapsed: number): BehaviorStatusType {
+    this.processStateChanges();
+
     if (!this.child) return BehaviorStatus.Failure;
     if (this.isInterrupted) return BehaviorStatus.Failure;
 
@@ -446,6 +454,7 @@ export class RepeaterNode extends DecoratorNode {
   }
 
   update(engine: Engine, elapsed: number): BehaviorStatusType {
+    this.processStateChanges();
     if (!this.child) return BehaviorStatus.Failure;
     if (this.isInterrupted) return BehaviorStatus.Failure;
 
